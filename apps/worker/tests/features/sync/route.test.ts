@@ -9,6 +9,10 @@ import {
   FirstbankConnectionError,
 } from "../../../src/connectors/firstbank";
 import {
+  FubonsecBrowserCapacityError,
+  FubonsecConnectionError,
+} from "../../../src/connectors/fubonsec";
+import {
   HncbBrowserCapacityError,
   HncbConnectionError,
 } from "../../../src/connectors/hncb";
@@ -33,6 +37,7 @@ const mocks = vi.hoisted(() => ({
   prepareHncbCaptchaSession: vi.fn(),
   prepareObankCaptchaSession: vi.fn(),
   prepareFirstbankCaptchaSession: vi.fn(),
+  prepareFubonsecCaptchaSession: vi.fn(),
   startEinvoiceSyncRun: vi.fn(),
   startTdccSyncRun: vi.fn(),
   syncCtbc: vi.fn(),
@@ -40,6 +45,7 @@ const mocks = vi.hoisted(() => ({
   syncEsun: vi.fn(),
   syncObank: vi.fn(),
   syncFirstbank: vi.fn(),
+  syncFubonsec: vi.fn(),
   syncHncb: vi.fn(),
   syncTaishin: vi.fn(),
   syncSkbank: vi.fn(),
@@ -67,6 +73,7 @@ vi.mock("../../../src/features/sync/service", () => ({
   prepareTaishinCaptchaSession: mocks.prepareTaishinCaptchaSession,
   prepareObankCaptchaSession: mocks.prepareObankCaptchaSession,
   prepareFirstbankCaptchaSession: mocks.prepareFirstbankCaptchaSession,
+  prepareFubonsecCaptchaSession: mocks.prepareFubonsecCaptchaSession,
   safeErrorMessage: (error: unknown) =>
     error instanceof Error ? error.message : String(error),
   syncCathaybk: mocks.syncCathaybk,
@@ -76,6 +83,7 @@ vi.mock("../../../src/features/sync/service", () => ({
   syncSinopac: vi.fn(),
   syncObank: mocks.syncObank,
   syncFirstbank: mocks.syncFirstbank,
+  syncFubonsec: mocks.syncFubonsec,
   syncHncb: mocks.syncHncb,
   syncTaishin: mocks.syncTaishin,
   syncSkbank: mocks.syncSkbank,
@@ -205,6 +213,24 @@ beforeEach(() => {
       investmentTransactions: 0,
     },
     cursorUpdated: true,
+  });
+  mocks.prepareFubonsecCaptchaSession.mockResolvedValue({
+    captchaImage: "data:image/jpeg;base64,AQID",
+    expiresAt: "2026-09-23T12:02:00.000Z",
+    digitCount: 4,
+    captchaKind: "numeric",
+  });
+  mocks.syncFubonsec.mockResolvedValue({
+    success: true,
+    connectorId: "fubonsec",
+    scope: "all",
+    records: 2,
+    newRecords: {
+      invoices: 0,
+      bankTransactions: 1,
+      investmentTransactions: 1,
+    },
+    cursorUpdated: false,
   });
 });
 
@@ -802,6 +828,83 @@ describe("First Bank web sync routes", () => {
     expect(response.headers.get("Retry-After")).toBe("9");
     await expect(response.json()).resolves.toMatchObject({
       error: { code: "FIRSTBANK_BROWSER_BUSY" },
+    });
+  });
+});
+
+describe("Fubon Securities web sync routes", () => {
+  it("returns numeric CAPTCHA metadata", async () => {
+    const response = await syncRoutes.request(
+      "/connectors/fubonsec/captcha",
+      { method: "POST" },
+      env,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      digitCount: 4,
+      captchaKind: "numeric",
+      captchaImage: "data:image/jpeg;base64,AQID",
+    });
+  });
+
+  it("maps browser capacity while preparing CAPTCHA", async () => {
+    mocks.prepareFubonsecCaptchaSession.mockRejectedValueOnce(
+      new FubonsecBrowserCapacityError("browser busy", 11),
+    );
+    const response = await syncRoutes.request(
+      "/connectors/fubonsec/captcha",
+      { method: "POST" },
+      env,
+    );
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("Retry-After")).toBe("11");
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "FUBONSEC_BROWSER_BUSY" },
+    });
+  });
+
+  it("accepts four to eight numeric characters and rejects malformed input", async () => {
+    const valid = await syncRoutes.request(
+      "/connectors/fubonsec/sync",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ captcha: "1234" }),
+      },
+      env,
+    );
+    expect(valid.status).toBe(200);
+    expect(mocks.syncFubonsec).toHaveBeenCalledWith(env, "manual", "all", {
+      captcha: "1234",
+    });
+
+    const invalid = await syncRoutes.request(
+      "/connectors/fubonsec/sync",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ captcha: "12AB" }),
+      },
+      env,
+    );
+    expect(invalid.status).toBe(400);
+  });
+
+  it("maps web connection failures", async () => {
+    mocks.syncFubonsec.mockRejectedValueOnce(
+      new FubonsecConnectionError("schema drift"),
+    );
+    const response = await syncRoutes.request(
+      "/connectors/fubonsec/sync",
+      { method: "POST" },
+      env,
+    );
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "FUBONSEC_CONNECTION_FAILED" },
     });
   });
 });

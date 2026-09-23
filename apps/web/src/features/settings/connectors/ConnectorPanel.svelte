@@ -98,7 +98,8 @@
       connectorId === "taishin" ||
       connectorId === "obank" ||
       connectorId === "firstbank" ||
-      connectorId === "hncb",
+      connectorId === "hncb" ||
+      connectorId === "fubonsec",
   );
   const browserBankSessionAvailable = $derived(
     browserBank && Boolean($settings.data?.sessionAvailable),
@@ -868,7 +869,9 @@
             ? "華南"
             : connectorId === "firstbank"
               ? "第一銀行"
-              : "永豐"}
+              : connectorId === "fubonsec"
+                ? "富邦證券"
+                : "永豐"}
       bind:captcha={bankCaptcha}
       captchaImage={bankCaptchaImage}
       digitCount={bankCaptchaDigitCount}

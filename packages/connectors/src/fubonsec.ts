@@ -84,6 +84,12 @@ export const fubonsecConfigSchema = z.object({
   userId: z.string().min(1).max(32).optional(),
   account: z.string().min(1).max(128).optional(),
   password: z.string().min(1).max(128).optional(),
+  browserSessionId: z.string().max(256).optional(),
+  browserSessionExpiresAt: z.string().optional(),
+  captcha: z
+    .string()
+    .regex(/^\d{4,8}$/)
+    .optional(),
   holdings: z.array(fubonsecHoldingSchema).default([]),
   trades: z.array(fubonsecTradeSchema).default([]),
   settlementBalances: z.array(fubonsecSettlementBalanceSchema).default([]),

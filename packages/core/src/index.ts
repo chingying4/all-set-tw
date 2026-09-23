@@ -616,8 +616,16 @@ export const connectorCatalog = {
     ],
     publicFields: [],
     credentialFields: ["userId", "account", "password"],
-    secretStateFields: [],
-    resetOnCredentialChangeFields: [],
+    secretStateFields: [
+      "browserSessionId",
+      "browserSessionExpiresAt",
+      "captcha",
+    ],
+    resetOnCredentialChangeFields: [
+      "browserSessionId",
+      "browserSessionExpiresAt",
+      "captcha",
+    ],
   },
 } as const satisfies Record<ConnectorId, ConnectorCatalogEntry>;
 

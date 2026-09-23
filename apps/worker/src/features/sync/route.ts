@@ -18,6 +18,11 @@ import {
   FirstbankVerificationRequiredError,
 } from "../../connectors/firstbank";
 import {
+  FubonsecBrowserCapacityError,
+  FubonsecConnectionError,
+  FubonsecVerificationRequiredError,
+} from "../../connectors/fubonsec";
+import {
   HncbBrowserCapacityError,
   HncbConnectionError,
   HncbVerificationRequiredError,
@@ -91,6 +96,13 @@ const firstbankSyncBodySchema = z.object({
   captcha: z
     .string()
     .regex(/^[A-Za-z0-9]{4,8}$/)
+    .optional(),
+});
+
+const fubonsecSyncBodySchema = z.object({
+  captcha: z
+    .string()
+    .regex(/^\d{4,8}$/)
     .optional(),
 });
 
@@ -491,14 +503,58 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
     },
   );
 
-  api.post("/connectors/fubonsec/sync", async (c) => {
-    return syncRouteResponse(
-      c,
-      withManualSyncLock(c.env, "fubonsec", SYNC_SCOPE_ALL, () =>
-        runConnectorSync(c.env, "fubonsec", "manual"),
-      ),
-    );
+  api.post("/connectors/fubonsec/captcha", async (c) => {
+    try {
+      return c.json(await prepareConnectorChallenge(c.env, "fubonsec"));
+    } catch (error) {
+      if (error instanceof SyncAlreadyRunningError) {
+        return jsonError(
+          "SYNC_ALREADY_RUNNING",
+          "富邦證券已有驗證或同步作業正在進行。",
+          409,
+        );
+      }
+      if (error instanceof FubonsecBrowserCapacityError) {
+        const response = jsonError("FUBONSEC_BROWSER_BUSY", error.message, 429);
+        response.headers.set("Retry-After", String(error.retryAfterSeconds));
+        return response;
+      }
+      if (
+        error instanceof NeedsUserActionError ||
+        error instanceof FubonsecVerificationRequiredError
+      ) {
+        return jsonError("USER_ACTION_REQUIRED", error.message, 400);
+      }
+      if (error instanceof FubonsecConnectionError) {
+        return jsonError("FUBONSEC_CAPTCHA_FAILED", error.message, 502);
+      }
+      return jsonError("FUBONSEC_CAPTCHA_FAILED", safeErrorMessage(error), 502);
+    }
   });
+
+  api.post(
+    "/connectors/fubonsec/sync",
+    zValidator(
+      "json",
+      fubonsecSyncBodySchema,
+      validationHook("INVALID_REQUEST", "富邦證券 sync options are invalid."),
+    ),
+    async (c) => {
+      const overrides = c.req.valid("json");
+      return syncRouteResponse(
+        c,
+        withManualSyncLock(c.env, "fubonsec", SYNC_SCOPE_ALL, () =>
+          runConnectorSync(
+            c.env,
+            "fubonsec",
+            "manual",
+            SYNC_SCOPE_ALL,
+            overrides,
+          ),
+        ),
+      );
+    },
+  );
 }
 
 async function queuedTdccSyncResponse(
@@ -663,6 +719,21 @@ async function syncRouteResponse(
         safeErrorMessage(error),
         502,
       );
+    }
+    if (error instanceof FubonsecBrowserCapacityError) {
+      const response = jsonError("FUBONSEC_BROWSER_BUSY", error.message, 429);
+      response.headers.set("Retry-After", String(error.retryAfterSeconds));
+      return response;
+    }
+    if (error instanceof FubonsecConnectionError) {
+      return jsonError(
+        "FUBONSEC_CONNECTION_FAILED",
+        safeErrorMessage(error),
+        502,
+      );
+    }
+    if (error instanceof FubonsecVerificationRequiredError) {
+      return jsonError("USER_ACTION_REQUIRED", safeErrorMessage(error), 400);
     }
     if (error instanceof FubonsecConnectorNotImplementedError) {
       return jsonError(

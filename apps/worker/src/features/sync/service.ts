@@ -52,6 +52,12 @@ import {
   HncbVerificationRequiredError,
 } from "../../connectors/hncb";
 import {
+  prepareFubonsecCaptcha,
+  FubonsecBrowserCapacityError,
+  FubonsecConnectionError,
+  FubonsecVerificationRequiredError,
+} from "../../connectors/fubonsec";
+import {
   createTaishinConnector,
   prepareTaishinCaptcha,
   TaishinConnectionError,
@@ -183,6 +189,10 @@ export type FirstbankSyncOverrides = {
   captcha?: string;
 };
 
+export type FubonsecSyncOverrides = {
+  captcha?: string;
+};
+
 export type CathaySyncOverrides = {
   otp?: string;
   otpChannel?: "email" | "sms";
@@ -192,6 +202,53 @@ export type TdccSyncOverrides = {
   otp?: string;
   otpChannel?: "email" | "sms";
 };
+
+export async function prepareFubonsecCaptchaSession(env: Env) {
+  const connectorId = "fubonsec";
+  const runId = crypto.randomUUID();
+  const lockRowId = canonicalSyncLockRowId(connectorId);
+  const locked = await acquireSyncJobLock(env.DB, {
+    lockRowId,
+    scope: SYNC_SCOPE_ALL,
+    trigger: "manual",
+    runId,
+    leaseMs: 3 * 60 * 1000,
+  });
+  if (!locked) throw new SyncAlreadyRunningError(connectorId);
+
+  try {
+    const settings = await requireConnectorSettings(env.DB, connectorId);
+    const stored = await decryptJson<Record<string, unknown>>(
+      settings.encrypted_config,
+      configEncryptionKey(env),
+    );
+    const config = parseFubonsecConfig({
+      ...stored,
+      ...parsePublicConnectorConfig(connectorId, settings.public_config),
+    });
+    const prepared = await prepareFubonsecCaptcha(env.BROWSER, config);
+    await updateConnectorEncryptedConfig(
+      env.DB,
+      connectorId,
+      await encryptJson(
+        {
+          ...stored,
+          browserSessionId: prepared.browserSessionId,
+          browserSessionExpiresAt: prepared.browserSessionExpiresAt,
+        },
+        configEncryptionKey(env),
+      ),
+    );
+    return {
+      captchaImage: prepared.captchaImage,
+      expiresAt: prepared.browserSessionExpiresAt,
+      digitCount: prepared.captchaDigitCount,
+      captchaKind: "numeric" as const,
+    };
+  } finally {
+    await releaseSyncJobLock(env.DB, lockRowId, runId);
+  }
+}
 
 export async function prepareSinopacCaptchaSession(env: Env) {
   const connectorId = "sinopac";
@@ -535,6 +592,7 @@ export async function syncFubonsec(
   env: Env,
   _trigger: SyncTrigger,
   scope: SyncScope = SYNC_SCOPE_ALL,
+  overrides: FubonsecSyncOverrides = {},
 ): Promise<SyncOutcome> {
   const connectorId = "fubonsec";
   const selected = new Set(
@@ -549,6 +607,7 @@ export async function syncFubonsec(
       configEncryptionKey(env),
     )),
     ...parsePublicConnectorConfig(connectorId, settings.public_config),
+    ...overrides,
   });
   console.log(
     `[sync] ${connectorId}/${scope}: starting (cursor=${settings.sync_cursor ? "set" : "none"})`,
@@ -2244,6 +2303,7 @@ function serializePublicConfig(connectorId: ConnectorId, config: object) {
 export function isUserActionError(error: unknown) {
   if (
     error instanceof NeedsUserActionError ||
+    error instanceof FubonsecVerificationRequiredError ||
     error instanceof CathayOtpChannelRequiredError ||
     error instanceof CathayOtpRequiredError ||
     error instanceof CathayOtpSessionExpiredError ||

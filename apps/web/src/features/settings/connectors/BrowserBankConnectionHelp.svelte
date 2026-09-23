@@ -15,7 +15,7 @@
     onVerify,
     onRefresh,
   }: {
-    bankName: "永豐" | "台新" | "王道" | "華南" | "第一銀行";
+    bankName: "永豐" | "台新" | "王道" | "華南" | "第一銀行" | "富邦證券";
     captchaImage: string;
     captcha?: string;
     digitCount: number;

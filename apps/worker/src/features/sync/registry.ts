@@ -7,6 +7,7 @@ import {
   prepareTaishinCaptchaSession,
   prepareObankCaptchaSession,
   prepareFirstbankCaptchaSession,
+  prepareFubonsecCaptchaSession,
   syncCathaybk,
   syncCtbc,
   syncSkbank,
@@ -29,6 +30,7 @@ import {
   type SyncScope,
   type HncbSyncOverrides,
   type TaishinSyncOverrides,
+  type FubonsecSyncOverrides,
   type TdccSyncOverrides,
   type CathaySyncOverrides,
 } from "./service";
@@ -102,7 +104,9 @@ export const connectorRuntimeRegistry: Record<
     prepareChallenge: prepareFirstbankCaptchaSession,
   },
   fubonsec: {
-    run: (env, trigger, scope) => syncFubonsec(env, trigger, scope),
+    run: (env, trigger, scope, overrides) =>
+      syncFubonsec(env, trigger, scope, overrides as FubonsecSyncOverrides),
+    prepareChallenge: prepareFubonsecCaptchaSession,
   },
 };
 
