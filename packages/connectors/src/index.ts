@@ -182,6 +182,14 @@ export { hncbConfigSchema, parseHncbConfig, parseHncbData } from "./hncb";
 export type { HncbConfig, HncbData, HncbPayloads } from "./hncb";
 import { hncbConfigSchema } from "./hncb";
 
+export {
+  FubonsecConnectorNotImplementedError,
+  fubonsecConfigSchema,
+  parseFubonsecConfig,
+} from "./fubonsec";
+export type { FubonsecConfig } from "./fubonsec";
+import { fubonsecConfigSchema } from "./fubonsec";
+
 const invoiceRecordSchema = z.object({
   sourceId: z.string().min(1),
   invoiceNumber: z.string().optional(),
@@ -791,6 +799,7 @@ export const connectorConfigSchemas = {
   obank: obankConfigSchema,
   firstbank: firstbankConfigSchema,
   hncb: hncbConfigSchema,
+  fubonsec: fubonsecConfigSchema,
 } satisfies Record<ConnectorId, z.ZodTypeAny>;
 
 export function parseConnectorConfig(

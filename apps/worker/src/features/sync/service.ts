@@ -21,6 +21,7 @@ import {
   parseTaishinConfig,
   parseTdccConfig,
   syncTdccTradeHistory,
+  FubonsecConnectorNotImplementedError,
   tdccConnector,
   TdccOtpExpiredError,
   TdccVerificationRequiredError,
@@ -527,6 +528,16 @@ export async function syncEsun(
       persistedCursor && persistedCursor !== settings.sync_cursor,
     ),
   };
+}
+
+export async function syncFubonsec(
+  env: Env,
+  _trigger: SyncTrigger,
+  scope: SyncScope = SYNC_SCOPE_ALL,
+): Promise<SyncOutcome> {
+  await requireConnectorSettings(env.DB, "fubonsec");
+  console.log(`[sync] fubonsec/${scope}: connector runtime is not implemented`);
+  throw new FubonsecConnectorNotImplementedError();
 }
 
 export async function syncCathaybk(

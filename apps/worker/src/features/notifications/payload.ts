@@ -3,6 +3,7 @@ import type {
   NotificationPreferences,
   SyncNotificationStatus,
 } from "@taiwan-fin-hub/core";
+import { connectorCatalog } from "@taiwan-fin-hub/core";
 
 export type SyncNotificationEvent = {
   connectorId: ConnectorId;
@@ -16,24 +17,10 @@ export type PushNotificationPayload = {
   tag: string;
 };
 
-const connectorLabels: Record<ConnectorId, string> = {
-  einvoice: "電子發票",
-  tdcc: "集保 e 存摺",
-  esun: "玉山銀行",
-  cathaybk: "國泰世華銀行",
-  sinopac: "永豐行動銀行",
-  taishin: "台新銀行",
-  ctbc: "中國信託銀行",
-  skbank: "新光銀行",
-  obank: "王道銀行",
-  hncb: "華南銀行",
-  firstbank: "第一銀行",
-};
-
 export function syncNotificationPayload(
   event: SyncNotificationEvent,
 ): PushNotificationPayload {
-  const connector = connectorLabels[event.connectorId];
+  const connector = connectorCatalog[event.connectorId].title;
   if (event.status === "success") {
     return {
       title: "同步完成",

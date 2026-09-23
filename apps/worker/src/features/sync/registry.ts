@@ -16,6 +16,7 @@ import {
   syncFirstbank,
   syncHncb,
   syncTaishin,
+  syncFubonsec,
   syncTdcc,
   SYNC_SCOPE_ALL,
   TDCC_SCOPE_BANK,
@@ -99,6 +100,9 @@ export const connectorRuntimeRegistry: Record<
     run: (env, trigger, _scope, overrides) =>
       syncFirstbank(env, trigger, overrides as FirstbankSyncOverrides),
     prepareChallenge: prepareFirstbankCaptchaSession,
+  },
+  fubonsec: {
+    run: (env, trigger, scope) => syncFubonsec(env, trigger, scope),
   },
 };
 

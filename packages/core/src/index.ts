@@ -286,6 +286,7 @@ export const supportedConnectorIds = [
   "obank",
   "hncb",
   "firstbank",
+  "fubonsec",
 ] as const;
 export type ConnectorId = (typeof supportedConnectorIds)[number];
 
@@ -598,6 +599,25 @@ export const connectorCatalog = {
       "captchaDigitCount",
       "captcha",
     ],
+  },
+  fubonsec: {
+    id: "fubonsec",
+    title: "富邦證券",
+    description: "證券庫存、交易對帳單與交割帳務",
+    connectionMode: "browser_per_sync",
+    scopes: ["all", "investments", "trades", "bank"],
+    capabilities: [
+      "investment_position",
+      "investment_transaction",
+      "bank_account",
+      "bank_balance_snapshot",
+      "bank_transaction",
+      "net_worth_history",
+    ],
+    publicFields: [],
+    credentialFields: ["userId", "account", "password"],
+    secretStateFields: [],
+    resetOnCredentialChangeFields: [],
   },
 } as const satisfies Record<ConnectorId, ConnectorCatalogEntry>;
 

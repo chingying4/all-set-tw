@@ -1,6 +1,7 @@
 import {
   CtbcConnectionError,
   EInvoiceProtocolUnavailableError,
+  FubonsecConnectorNotImplementedError,
   ObankConnectionError,
   ObankProtocolError,
   SkbankConnectionError,
@@ -489,6 +490,15 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
       );
     },
   );
+
+  api.post("/connectors/fubonsec/sync", async (c) => {
+    return syncRouteResponse(
+      c,
+      withManualSyncLock(c.env, "fubonsec", SYNC_SCOPE_ALL, () =>
+        runConnectorSync(c.env, "fubonsec", "manual"),
+      ),
+    );
+  });
 }
 
 async function queuedTdccSyncResponse(
@@ -652,6 +662,13 @@ async function syncRouteResponse(
         "FIRSTBANK_CONNECTION_FAILED",
         safeErrorMessage(error),
         502,
+      );
+    }
+    if (error instanceof FubonsecConnectorNotImplementedError) {
+      return jsonError(
+        "CONNECTOR_NOT_IMPLEMENTED",
+        safeErrorMessage(error),
+        501,
       );
     }
     return jsonError("SYNC_FAILED", safeErrorMessage(error), 500);

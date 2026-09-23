@@ -78,4 +78,9 @@ export const connectorFields = {
     { key: "account", label: "登入代號", type: "text" },
     { key: "password", label: "網路銀行密碼", type: "password" },
   ],
+  fubonsec: [
+    { key: "userId", label: "身分證字號／統編", type: "text" },
+    { key: "account", label: "登入代號", type: "text" },
+    { key: "password", label: "登入密碼", type: "password" },
+  ],
 } satisfies ConnectorFieldMap;
