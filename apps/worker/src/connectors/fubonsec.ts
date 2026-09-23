@@ -71,7 +71,7 @@ export async function prepareFubonsecCaptcha(
       browserSessionExpiresAt: new Date(
         Date.now() + CAPTCHA_VALIDITY_MS,
       ).toISOString(),
-      captchaDigitCount: 4,
+      captchaDigitCount: 6,
       captchaImage,
     };
   } catch (error) {
