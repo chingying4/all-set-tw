@@ -21,7 +21,8 @@ import {
   parseTaishinConfig,
   parseTdccConfig,
   syncTdccTradeHistory,
-  FubonsecConnectorNotImplementedError,
+  fubonsecConnector,
+  parseFubonsecConfig,
   tdccConnector,
   TdccOtpExpiredError,
   TdccVerificationRequiredError,
@@ -535,9 +536,100 @@ export async function syncFubonsec(
   _trigger: SyncTrigger,
   scope: SyncScope = SYNC_SCOPE_ALL,
 ): Promise<SyncOutcome> {
-  await requireConnectorSettings(env.DB, "fubonsec");
-  console.log(`[sync] fubonsec/${scope}: connector runtime is not implemented`);
-  throw new FubonsecConnectorNotImplementedError();
+  const connectorId = "fubonsec";
+  const selected = new Set(
+    scope === SYNC_SCOPE_ALL
+      ? [TDCC_SCOPE_INVESTMENTS, TDCC_SCOPE_BANK, TDCC_SCOPE_TRADES]
+      : [scope],
+  );
+  const settings = await requireConnectorSettings(env.DB, connectorId);
+  const config = parseFubonsecConfig({
+    ...(await decryptJson<Record<string, unknown>>(
+      settings.encrypted_config,
+      configEncryptionKey(env),
+    )),
+    ...parsePublicConnectorConfig(connectorId, settings.public_config),
+  });
+  console.log(
+    `[sync] ${connectorId}/${scope}: starting (cursor=${settings.sync_cursor ? "set" : "none"})`,
+  );
+
+  const result = await fubonsecConnector.sync(
+    config,
+    settings.sync_cursor ?? undefined,
+  );
+  const now = new Date().toISOString();
+  const investmentPositions = result.records ?? [];
+  const investmentTransactions = result.investmentTransactions ?? [];
+  const bankAccounts = result.bankAccounts ?? [];
+  const bankBalanceSnapshots = result.bankBalanceSnapshots ?? [];
+  const bankTransactions = result.bankTransactions ?? [];
+  const netWorthHistory = result.netWorthHistory ?? [];
+  const writeInvestments = selected.has(TDCC_SCOPE_INVESTMENTS);
+  const writeTrades = selected.has(TDCC_SCOPE_TRADES);
+  const writeBank = selected.has(TDCC_SCOPE_BANK);
+  console.log(
+    `[sync] ${connectorId}/${scope}: positions=${investmentPositions.length} trades=${investmentTransactions.length} accounts=${bankAccounts.length} snapshots=${bankBalanceSnapshots.length} transactions=${bankTransactions.length}`,
+  );
+
+  const records: SyncWriteRecord[] = [
+    ...(writeInvestments
+      ? investmentPositions.map((position) =>
+          investmentPositionRecord(connectorId, position, now),
+        )
+      : []),
+    ...(writeTrades
+      ? investmentTransactions.map((transaction) =>
+          investmentTransactionRecord(connectorId, transaction, now),
+        )
+      : []),
+    ...(writeBank
+      ? bankAccounts.map((account) =>
+          bankAccountRecord(connectorId, account, now),
+        )
+      : []),
+    ...(writeBank
+      ? bankBalanceSnapshots.map((snapshot) =>
+          bankBalanceSnapshotRecord(connectorId, snapshot, now),
+        )
+      : []),
+    ...(writeBank
+      ? bankTransactions.map((transaction) =>
+          bankTransactionRecord(connectorId, transaction, now),
+        )
+      : []),
+    ...netWorthHistory.map((point) =>
+      netWorthHistoryRecord(connectorId, point, now),
+    ),
+  ];
+
+  const newRecords = await persistStagedSyncWrite(env.DB, {
+    records,
+    afterPromoteStatements:
+      writeBank && bankAccounts.length > 0
+        ? [linkCanonicalBankAccountsStatement(env.DB)]
+        : [],
+  });
+
+  if (writeBank && bankBalanceSnapshots.length > 0) {
+    await rebuildBankDepositHistory(env.DB, [dateFromIso(now)]);
+  }
+
+  return {
+    success: true,
+    connectorId,
+    scope,
+    records:
+      (writeInvestments ? investmentPositions.length : 0) +
+      (writeTrades ? investmentTransactions.length : 0) +
+      (writeBank
+        ? bankAccounts.length +
+          bankBalanceSnapshots.length +
+          bankTransactions.length
+        : 0),
+    newRecords,
+    cursorUpdated: false,
+  };
 }
 
 export async function syncCathaybk(

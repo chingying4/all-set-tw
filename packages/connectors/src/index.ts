@@ -183,11 +183,20 @@ export type { HncbConfig, HncbData, HncbPayloads } from "./hncb";
 import { hncbConfigSchema } from "./hncb";
 
 export {
+  createFubonsecConnector,
+  fubonsecConnector,
   FubonsecConnectorNotImplementedError,
   fubonsecConfigSchema,
   parseFubonsecConfig,
 } from "./fubonsec";
-export type { FubonsecConfig } from "./fubonsec";
+export type {
+  FubonsecClient,
+  FubonsecConfig,
+  FubonsecHolding,
+  FubonsecSettlementBalance,
+  FubonsecSettlementMovement,
+  FubonsecTrade,
+} from "./fubonsec";
 import { fubonsecConfigSchema } from "./fubonsec";
 
 const invoiceRecordSchema = z.object({
