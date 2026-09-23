@@ -84,14 +84,32 @@ export async function prepareFubonsecCaptcha(
 
 async function captureCaptcha(page: Page) {
   try {
-    await page.waitForSelector('img[src*="/Home/ULC"]', {
-      timeout: CAPTCHA_IMAGE_TIMEOUT_MS,
-      visible: true,
+    await page.waitForFunction(
+      () => Boolean(document.querySelector("#authCodeImg, img.verify-image")),
+      { timeout: CAPTCHA_IMAGE_TIMEOUT_MS },
+    );
+    return await page.evaluate(async () => {
+      const image = document.querySelector<HTMLImageElement>(
+        "#authCodeImg, img.verify-image, img[src*='/Home/ULC']",
+      );
+      const src = image?.getAttribute("src") || "/Home/ULC";
+      const url = new URL(src, window.location.origin);
+      url.searchParams.set("_", String(Date.now()));
+      const response = await fetch(url.href, {
+        cache: "no-store",
+        credentials: "include",
+      });
+      if (!response.ok) {
+        throw new Error(`captcha request failed: ${response.status}`);
+      }
+      const blob = await response.blob();
+      return await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(blob);
+      });
     });
-    const target = await page.$('img[src*="/Home/ULC"]');
-    if (!target) throw new Error("captcha image not found");
-    const bytes = await target.screenshot({ type: "jpeg" });
-    return `data:image/jpeg;base64,${bytesToBase64(bytes)}`;
   } catch (error) {
     throw new FubonsecConnectionError(
       "富邦證券登入頁沒有在期限內取得圖形驗證碼。",
