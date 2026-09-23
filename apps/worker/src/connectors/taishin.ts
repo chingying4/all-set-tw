@@ -1238,8 +1238,12 @@ function taishinBillingContext(summary: unknown) {
   const value =
     isRecord(summary) && isRecord(summary.value) ? summary.value : undefined;
   const knownOrganizations = ["001", "055", "100"];
+  const firstReturnedOrganization = value
+    ? Object.entries(value).find(([, candidate]) => isRecord(candidate))?.[0]
+    : undefined;
   const org =
     knownOrganizations.find((candidate) => isRecord(value?.[candidate])) ??
+    firstReturnedOrganization ??
     "001";
   const account = isRecord(value?.[org]) ? value[org] : undefined;
   const statementDate =

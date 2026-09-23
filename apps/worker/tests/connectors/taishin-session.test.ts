@@ -337,6 +337,74 @@ describe("Taishin browser session lifecycle", () => {
     expect(browserInstance.close).toHaveBeenCalledOnce();
   });
 
+  it("uses the returned credit-card organization when it is not in the known list", async () => {
+    const browserPage = page();
+    const response = (value: unknown, error: unknown = null) => ({
+      ok: true,
+      status: 200,
+      contentType: "application/json",
+      text: JSON.stringify({ value, error }),
+    });
+    browserPage.evaluate
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        contentType: "application/json",
+        text: JSON.stringify({
+          RESULT: "SUCCESS",
+          DBSESSIONID: "database-session",
+        }),
+      })
+      .mockResolvedValueOnce(response({ fmtRealTxListMap: [] }))
+      .mockResolvedValueOnce(
+        response(
+          {
+            "812": {
+              "OUT-AVAIL-CREDIT": "100000",
+              "OUT-STMT-BALANCE": "1200",
+              "OUT-CRLIMIT-PERM": "200000",
+              "OUT-DTE-LST-STMT": "20260720",
+            },
+          },
+          "",
+        ),
+      )
+      .mockResolvedValueOnce(
+        response({
+          showAccoutnYM: "2026/07",
+          showCbalance: "1200",
+          showCdue: "1200",
+          newAcctDetailList: [],
+        }),
+      );
+    const browserInstance = browser(browserPage);
+    puppeteerMock.launch.mockResolvedValue(browserInstance);
+
+    const result = await createTaishinConnector({} as Fetcher, vi.fn()).sync({
+      ...credentials,
+      sessionCookies: JSON.stringify([
+        {
+          name: "SESSION",
+          value: "encrypted-at-rest",
+          domain: "my.taishinbank.com.tw",
+        },
+      ]),
+    });
+
+    expect(result.creditCardBills).toHaveLength(1);
+    expect(browserPage.evaluate).toHaveBeenCalledWith(expect.any(Function), {
+      path: "/TIBNetBank/svc/web4/rb0708rwd/init",
+      body: {
+        org: "812",
+        byear: "2026",
+        bmonth: "07",
+        cardHolderFlagSelected: "1",
+        cardNo: "",
+      },
+      timeoutMs: 4_000,
+    });
+  });
+
   it("re-authenticates once and skips history when no current bill exists", async () => {
     const browserPage = page();
     const response = (value: unknown) => ({
