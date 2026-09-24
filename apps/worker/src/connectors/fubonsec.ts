@@ -199,12 +199,36 @@ class FubonsecBrowserSession implements FubonsecBrowserClient {
 
   private async fetchRows(page: Page, url: string) {
     try {
-      await page.goto(url, { waitUntil: "networkidle2", timeout: 30_000 });
+      await page.goto(url, {
+        waitUntil: "domcontentloaded",
+        timeout: 30_000,
+      });
       await assertStillAuthenticated(page);
+      await page
+        .waitForFunction(
+          () =>
+            document.querySelectorAll("table tr").length > 1 ||
+            /查無資料|無資料|尚無資料/.test(document.body.innerText ?? ""),
+          { timeout: 10_000 },
+        )
+        .catch(() => undefined);
       return extractTableRows(page);
     } catch (error) {
       if (error instanceof FubonsecVerificationRequiredError) throw error;
-      throw new FubonsecConnectionError("富邦證券帳戶頁資料讀取失敗。", error);
+      const detail = safeFubonsecErrorDetail(error);
+      console.error(
+        JSON.stringify({
+          event: "fubonsec_account_page_failed",
+          connectorId: "fubonsec",
+          path: new URL(url).pathname,
+          errorName: error instanceof Error ? error.name : typeof error,
+          message: detail,
+        }),
+      );
+      throw new FubonsecConnectionError(
+        `富邦證券帳戶頁資料讀取失敗：${detail}`,
+        error,
+      );
     }
   }
 }
