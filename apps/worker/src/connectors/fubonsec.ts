@@ -17,8 +17,6 @@ const OVERSEAS_STOCK_URL = `${ORIGIN}/order/page_101_3`;
 const CAPTCHA_KEEP_ALIVE_MS = 150_000;
 const CAPTCHA_VALIDITY_MS = 120_000;
 const CAPTCHA_IMAGE_TIMEOUT_MS = 10_000;
-const LOGIN_RESULT_ATTEMPTS = 12;
-const LOGIN_RESULT_POLL_MS = 750;
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -265,38 +263,75 @@ async function submitLogin(page: Page, config: FubonsecConfig) {
       ["驗證碼", "captcha", "authcode"],
       config.captcha!,
     );
-    const clicked = await clickLoginButton(page);
-    if (!clicked)
-      throw new FubonsecConnectionError("富邦證券登入按鈕結構已變更。");
-
-    for (let attempt = 0; attempt < LOGIN_RESULT_ATTEMPTS; attempt += 1) {
-      const outcome = await readLoginOutcome(page);
-      if (outcome === "success") return;
-      if (outcome === "captcha") {
-        throw new FubonsecVerificationRequiredError(
-          "富邦證券圖形驗證碼錯誤，請重新取得驗證碼。",
-        );
-      }
-      if (outcome === "credential") {
-        throw new FubonsecVerificationRequiredError(
-          "富邦證券登入資料遭拒，請確認身分證字號與登入密碼。",
-        );
-      }
-      if (outcome === "otp") {
-        throw new FubonsecVerificationRequiredError(
-          "富邦證券要求 OTP 動態密碼驗證；目前富邦 connector 尚未支援 OTP 流程。",
-        );
-      }
-      if (outcome === "webca") {
-        throw new FubonsecVerificationRequiredError(
-          "富邦證券要求 WebCA 憑證保護密碼；目前富邦 connector 尚未支援憑證驗證。",
-        );
-      }
-      await new Promise((resolve) => setTimeout(resolve, LOGIN_RESULT_POLL_MS));
-    }
-    throw new FubonsecConnectionError(
-      "富邦證券登入已送出，但未能確認登入結果。",
+    const result = await page.evaluate(
+      async ({ userId, password, captcha }) => {
+        const post = async (path: string, body: Record<string, string>) => {
+          const response = await fetch(path, {
+            method: "POST",
+            headers: {
+              Accept: "application/json, text/javascript, */*; q=0.01",
+              "Content-Type":
+                "application/x-www-form-urlencoded; charset=UTF-8",
+              "X-Requested-With": "XMLHttpRequest",
+            },
+            body: new URLSearchParams(body),
+            credentials: "include",
+          });
+          const text = await response.text();
+          let json: unknown;
+          try {
+            json = JSON.parse(text);
+          } catch {
+            return {
+              ok: false,
+              stage: path,
+              status: response.status,
+              result: "",
+              message: text.slice(0, 200),
+            };
+          }
+          const record =
+            json && typeof json === "object"
+              ? (json as Record<string, unknown>)
+              : {};
+          return {
+            ok: response.ok,
+            stage: path,
+            status: response.status,
+            result: typeof record.Result === "string" ? record.Result : "",
+            message: typeof record.Message === "string" ? record.Message : "",
+            mode: typeof record.Mode === "string" ? record.Mode : "",
+          };
+        };
+        const normalizedUserId = userId.toUpperCase();
+        const captchaResult = await post("/Home/VerifyCaptcha", {
+          strNo: normalizedUserId,
+          pValidateCode: captcha,
+        });
+        if (!captchaResult.ok || captchaResult.result !== "Y") {
+          return captchaResult;
+        }
+        return post("/Home/Main", {
+          strSet: "",
+          strNo: normalizedUserId,
+          strPass: password,
+          pOTP: "",
+          mode: "WebCA",
+          x: "0",
+        });
+      },
+      {
+        userId: config.userId!,
+        password: config.password!,
+        captcha: config.captcha!,
+      },
     );
+    classifyLoginApiResult(result);
+    await page.goto(PRODUCT_OVERVIEW_URL, {
+      waitUntil: "networkidle2",
+      timeout: 30_000,
+    });
+    await assertStillAuthenticated(page);
   } catch (error) {
     if (
       error instanceof FubonsecConnectionError ||
@@ -306,6 +341,43 @@ async function submitLogin(page: Page, config: FubonsecConfig) {
     }
     throw new FubonsecConnectionError("富邦證券登入流程失敗。", error);
   }
+}
+
+function classifyLoginApiResult(result: {
+  ok: boolean;
+  stage: string;
+  status: number;
+  result: string;
+  message: string;
+  mode?: string;
+}) {
+  if (result.ok && result.stage === "/Home/Main" && result.result === "Y") {
+    return;
+  }
+  const message = result.message || "富邦證券登入失敗。";
+  if (result.stage === "/Home/VerifyCaptcha" || /驗證碼/.test(message)) {
+    throw new FubonsecVerificationRequiredError(
+      `富邦證券圖形驗證碼錯誤或已失效：${message}`,
+    );
+  }
+  if (/OTP|動態密碼|手機|e-?mail/i.test(message) || result.result === "O") {
+    throw new FubonsecVerificationRequiredError(
+      `富邦證券要求 OTP 動態密碼驗證；目前富邦 connector 尚未支援 OTP 流程。${message ? `（${message}）` : ""}`,
+    );
+  }
+  if (/WebCA|憑證|CA/i.test(message) || result.mode === "WebCA") {
+    throw new FubonsecVerificationRequiredError(
+      `富邦證券要求 WebCA 憑證驗證；目前富邦 connector 尚未支援憑證驗證。${message ? `（${message}）` : ""}`,
+    );
+  }
+  if (/密碼|帳號|身分證|登入資料|錯誤|失敗|鎖定/.test(message)) {
+    throw new FubonsecVerificationRequiredError(
+      `富邦證券登入資料遭拒：${message}`,
+    );
+  }
+  throw new FubonsecConnectionError(
+    `富邦證券登入回應無法辨識（${result.stage} HTTP ${result.status}, Result=${result.result || "empty"}）。`,
+  );
 }
 
 async function fillLoginField(
@@ -369,112 +441,6 @@ async function fillLoginField(
   }
   await page.click(selector, { clickCount: 3 });
   await page.type(selector, value);
-}
-
-async function clickLoginButton(page: Page) {
-  return page.evaluate(() => {
-    const normalize = (text: string | null | undefined) =>
-      text?.replace(/\s+/g, "") ?? "";
-    const isVisible = (element: HTMLElement) => {
-      const style = window.getComputedStyle(element);
-      const rect = element.getBoundingClientRect();
-      return (
-        style.display !== "none" &&
-        style.visibility !== "hidden" &&
-        rect.width > 0 &&
-        rect.height > 0
-      );
-    };
-    const candidates = Array.from(
-      document.querySelectorAll<HTMLElement>(
-        'button, input[type="button"], input[type="submit"], a, [role="button"]',
-      ),
-    ).filter((element) => {
-      const label =
-        element instanceof HTMLInputElement ? element.value : element.innerText;
-      return (
-        isVisible(element) &&
-        normalize(label) === "登入" &&
-        !/otp|webca|憑證|驗證/.test(
-          normalize(
-            [
-              element.id,
-              element.className.toString(),
-              element.getAttribute("aria-label"),
-            ].join(" "),
-          ).toLowerCase(),
-        )
-      );
-    });
-    const target =
-      candidates.find((element) =>
-        element.matches('button, input[type="button"], input[type="submit"]'),
-      ) ?? candidates[0];
-    target?.click();
-    return Boolean(target);
-  });
-}
-
-async function readLoginOutcome(page: Page) {
-  return page.evaluate(() => {
-    const visibleText = () => {
-      const isVisible = (element: Element) => {
-        const style = window.getComputedStyle(element);
-        const rect = element.getBoundingClientRect();
-        return (
-          style.display !== "none" &&
-          style.visibility !== "hidden" &&
-          rect.width > 0 &&
-          rect.height > 0
-        );
-      };
-      return Array.from(document.body.querySelectorAll<HTMLElement>("body *"))
-        .filter(isVisible)
-        .map((element) => element.innerText || element.textContent || "")
-        .join("\n");
-    };
-    const text = visibleText().replace(/\s+/g, "");
-    const hasVisibleLoginInput = Array.from(
-      document.querySelectorAll<HTMLInputElement>("input"),
-    ).some((input) => {
-      const style = window.getComputedStyle(input);
-      const rect = input.getBoundingClientRect();
-      return (
-        input.type !== "hidden" &&
-        !input.disabled &&
-        style.display !== "none" &&
-        style.visibility !== "hidden" &&
-        rect.width > 0 &&
-        rect.height > 0 &&
-        /身分證|密碼|驗證碼/.test(
-          [input.placeholder, input.name, input.id].filter(Boolean).join(""),
-        )
-      );
-    });
-    if (/OTP驗證碼|動態密碼|取得驗證碼|手機發送|e-?mail發送/i.test(text)) {
-      return "otp" as const;
-    }
-    if (/WebCA|憑證保護密碼/i.test(text)) {
-      return "webca" as const;
-    }
-    if (/驗證碼.{0,20}(錯誤|不符|有誤|失敗)|請輸入純數字驗證碼/.test(text)) {
-      return "captcha" as const;
-    }
-    if (
-      /密碼.{0,20}(錯誤|不符|有誤|失敗)|登入資料.{0,20}(錯誤|有誤)|帳號.{0,20}(錯誤|有誤)/.test(
-        text,
-      )
-    ) {
-      return "credential" as const;
-    }
-    if (
-      !hasVisibleLoginInput &&
-      (/\/order\//i.test(location.pathname) || /帳戶總覽|商品總覽/.test(text))
-    ) {
-      return "success" as const;
-    }
-    return "pending" as const;
-  });
 }
 
 async function assertStillAuthenticated(page: Page) {
