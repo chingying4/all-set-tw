@@ -69,7 +69,7 @@
       <img
         src={captchaImage}
         alt={`${bankName}圖形驗證碼`}
-        class="h-[70px] w-[200px] shrink-0 rounded border border-ink/25 bg-white object-fill shadow-sm"
+        class="h-28 w-80 max-w-full shrink-0 rounded border border-ink/25 bg-white object-contain shadow-sm [image-rendering:auto]"
       />
       <Input
         class="min-w-40 flex-1"

@@ -850,7 +850,7 @@ async function captureCaptcha(page: BrowserPage) {
     );
     if (!captchaInput) return undefined;
     const inputRect = captchaInput.getBoundingClientRect();
-    const images = Array.from(
+    const candidates = Array.from(
       document.querySelectorAll<HTMLImageElement>("img"),
     )
       .filter((image) => image.complete && image.naturalWidth > 0)
@@ -871,23 +871,47 @@ async function captureCaptcha(page: BrowserPage) {
             Math.abs(rect.left - inputRect.right),
           width: rect.width,
           height: rect.height,
+          aspect: rect.width / Math.max(1, rect.height),
         };
       })
-      .filter(({ width, height }) => width >= 50 && height >= 20)
+      .filter(
+        ({ width, height, aspect }) =>
+          width >= 50 && height >= 20 && aspect >= 1.2 && aspect <= 6,
+      )
       .sort((left, right) => right.score - left.score);
-    const image = images[0]?.image;
-    if (!image) return undefined;
-    const canvas = document.createElement("canvas");
-    canvas.width = image.naturalWidth;
-    canvas.height = image.naturalHeight;
-    const context = canvas.getContext("2d");
-    if (!context) return undefined;
-    context.drawImage(image, 0, 0);
-    const dataUrl = canvas.toDataURL("image/jpeg");
-    return {
-      bytes: dataUrl.split(",")[1] ?? "",
-      digitCount,
-    };
+    for (const { image } of candidates) {
+      const canvas = document.createElement("canvas");
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const context = canvas.getContext("2d");
+      if (!context) continue;
+      context.drawImage(image, 0, 0);
+      const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+      let nonDarkPixels = 0;
+      let coloredPixels = 0;
+      for (let index = 0; index < imageData.data.length; index += 4) {
+        const red = imageData.data[index] ?? 0;
+        const green = imageData.data[index + 1] ?? 0;
+        const blue = imageData.data[index + 2] ?? 0;
+        const alpha = imageData.data[index + 3] ?? 0;
+        if (alpha < 16) continue;
+        const brightness = (red + green + blue) / 3;
+        if (brightness > 32) nonDarkPixels += 1;
+        if (Math.max(red, green, blue) - Math.min(red, green, blue) > 24) {
+          coloredPixels += 1;
+        }
+      }
+      const pixelCount = Math.max(1, imageData.data.length / 4);
+      const nonDarkRatio = nonDarkPixels / pixelCount;
+      const coloredRatio = coloredPixels / pixelCount;
+      if (nonDarkRatio < 0.02 && coloredRatio < 0.02) continue;
+      const dataUrl = canvas.toDataURL("image/jpeg");
+      return {
+        bytes: dataUrl.split(",")[1] ?? "",
+        digitCount,
+      };
+    }
+    return undefined;
   }, TAISHIN_CAPTCHA_DIGIT_COUNT);
   if (!target) {
     throw new TaishinCaptchaUnavailableError(
