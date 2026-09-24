@@ -844,7 +844,7 @@ async function captureCaptcha(page: BrowserPage) {
       "台新登入頁沒有在期限內取得圖形驗證碼。",
     );
   }
-  const target = await page.evaluate((digitCount) => {
+  const target = await page.evaluate(async (digitCount) => {
     const captchaInput = document.querySelector<HTMLInputElement>(
       'input[data-taishin-field="captcha"]',
     );
@@ -877,9 +877,24 @@ async function captureCaptcha(page: BrowserPage) {
       .sort((left, right) => right.score - left.score);
     const image = images[0]?.image;
     if (!image) return undefined;
-    image.dataset.taishinCaptcha = "image";
+    const src = image.currentSrc || image.src || image.getAttribute("src");
+    if (!src) return undefined;
+    const url = new URL(src, window.location.href);
+    url.searchParams.set("_", String(Date.now()));
+    const response = await fetch(url.href, {
+      cache: "no-store",
+      credentials: "include",
+    });
+    if (!response.ok) return undefined;
+    const blob = await response.blob();
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(blob);
+    });
     return {
-      selector: 'img[data-taishin-captcha="image"]',
+      bytes: dataUrl.split(",")[1] ?? "",
       digitCount,
     };
   }, TAISHIN_CAPTCHA_DIGIT_COUNT);
@@ -888,10 +903,8 @@ async function captureCaptcha(page: BrowserPage) {
       "台新登入頁沒有在期限內取得圖形驗證碼。",
     );
   }
-  const image = await page.$(target.selector);
-  if (!image) throw new TaishinConnectionError("台新圖形驗證碼已失效。");
-  const bytes = await image.screenshot({ type: "jpeg" });
-  return { bytes, digitCount: target.digitCount };
+  if (!target.bytes) throw new TaishinConnectionError("台新圖形驗證碼已失效。");
+  return { bytes: target.bytes, digitCount: target.digitCount };
 }
 
 async function submitLogin(
