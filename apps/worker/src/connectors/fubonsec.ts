@@ -14,8 +14,8 @@ const LOGIN_URL = `${ORIGIN}/Home/index?loginFlag=Y`;
 const PRODUCT_OVERVIEW_URL = `${ORIGIN}/order/page_101_1`;
 const DOMESTIC_STOCK_URL = `${ORIGIN}/order/page_101_2`;
 const OVERSEAS_STOCK_URL = `${ORIGIN}/order/page_101_3`;
-const CAPTCHA_KEEP_ALIVE_MS = 150_000;
-const CAPTCHA_VALIDITY_MS = 120_000;
+const CAPTCHA_KEEP_ALIVE_MS = 90_000;
+const CAPTCHA_VALIDITY_MS = 75_000;
 const CAPTCHA_IMAGE_TIMEOUT_MS = 10_000;
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
