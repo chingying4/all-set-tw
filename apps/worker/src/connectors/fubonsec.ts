@@ -246,23 +246,27 @@ async function captureCaptcha(page: Page) {
 }
 
 async function submitLogin(page: Page, config: FubonsecConfig) {
+  let stage = "fill-user-id";
   try {
     await fillLoginField(
       page,
       ["身分證", "身分證字號", "user", "id"],
       config.userId!,
     );
+    stage = "fill-password";
     await fillLoginField(
       page,
       ["密碼", "password", "passwd", "pwd"],
       config.password!,
       "password",
     );
+    stage = "fill-captcha";
     await fillLoginField(
       page,
       ["驗證碼", "captcha", "authcode"],
       config.captcha!,
     );
+    stage = "submit-login-api";
     const result = await page.evaluate(
       async ({ userId, password, captcha }) => {
         const post = async (path: string, body: Record<string, string>) => {
@@ -327,10 +331,12 @@ async function submitLogin(page: Page, config: FubonsecConfig) {
       },
     );
     classifyLoginApiResult(result);
+    stage = "open-account-overview";
     await page.goto(PRODUCT_OVERVIEW_URL, {
       waitUntil: "networkidle2",
       timeout: 30_000,
     });
+    stage = "verify-authentication";
     await assertStillAuthenticated(page);
   } catch (error) {
     if (
@@ -339,8 +345,26 @@ async function submitLogin(page: Page, config: FubonsecConfig) {
     ) {
       throw error;
     }
-    throw new FubonsecConnectionError("富邦證券登入流程失敗。", error);
+    const detail = safeFubonsecErrorDetail(error);
+    console.error(
+      JSON.stringify({
+        event: "fubonsec_login_failed",
+        connectorId: "fubonsec",
+        stage,
+        errorName: error instanceof Error ? error.name : typeof error,
+        message: detail,
+      }),
+    );
+    throw new FubonsecConnectionError(
+      `富邦證券登入流程失敗（${stage}）：${detail}`,
+      error,
+    );
   }
+}
+
+function safeFubonsecErrorDetail(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/\s+/g, " ").trim().slice(0, 240) || "未知錯誤";
 }
 
 function classifyLoginApiResult(result: {
