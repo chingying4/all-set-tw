@@ -24,6 +24,7 @@ export const TAISHIN_AUTO_LOGIN_ATTEMPTS = 3;
 const CAPTCHA_KEEP_ALIVE_MS = 150_000;
 const CAPTCHA_VALIDITY_MS = 120_000;
 const CAPTCHA_IMAGE_TIMEOUT_MS = 10_000;
+const TAISHIN_CAPTCHA_DIGIT_COUNT = 5;
 const CAPTCHA_PAGE_RETRY_ATTEMPTS = 1;
 const LOGIN_RESULT_ATTEMPTS = 10;
 const LOGIN_RESULT_POLL_MS = 500;
@@ -877,11 +878,9 @@ async function captureCaptcha(page: BrowserPage) {
     const image = images[0]?.image;
     if (!image) return undefined;
     image.dataset.taishinCaptcha = "image";
-    const declaredLength = captchaInput.maxLength;
     return {
       selector: 'img[data-taishin-captcha="image"]',
-      digitCount:
-        declaredLength >= 4 && declaredLength <= 8 ? declaredLength : 6,
+      digitCount: TAISHIN_CAPTCHA_DIGIT_COUNT,
     };
   });
   if (!target) {
