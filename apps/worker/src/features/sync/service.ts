@@ -21,7 +21,7 @@ import {
   parseTaishinConfig,
   parseTdccConfig,
   syncTdccTradeHistory,
-  fubonsecConnector,
+  createFubonsecConnector,
   parseFubonsecConfig,
   tdccConnector,
   TdccOtpExpiredError,
@@ -52,6 +52,7 @@ import {
   HncbVerificationRequiredError,
 } from "../../connectors/hncb";
 import {
+  createFubonsecBrowserClient,
   prepareFubonsecCaptcha,
   FubonsecBrowserCapacityError,
   FubonsecConnectionError,
@@ -613,10 +614,10 @@ export async function syncFubonsec(
     `[sync] ${connectorId}/${scope}: starting (cursor=${settings.sync_cursor ? "set" : "none"})`,
   );
 
-  const result = await fubonsecConnector.sync(
-    config,
-    settings.sync_cursor ?? undefined,
-  );
+  const fubonsecClient = createFubonsecBrowserClient(env.BROWSER, config);
+  const result = await createFubonsecConnector(fubonsecClient)
+    .sync(config, settings.sync_cursor ?? undefined)
+    .finally(() => fubonsecClient.close());
   const now = new Date().toISOString();
   const investmentPositions = result.records ?? [];
   const investmentTransactions = result.investmentTransactions ?? [];

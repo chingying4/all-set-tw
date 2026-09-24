@@ -102,7 +102,7 @@ const firstbankSyncBodySchema = z.object({
 const fubonsecSyncBodySchema = z.object({
   captcha: z
     .string()
-    .regex(/^\d{4,8}$/)
+    .regex(/^\d{6}$/)
     .optional(),
 });
 

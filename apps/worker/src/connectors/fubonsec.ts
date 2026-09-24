@@ -1,11 +1,24 @@
 import { launchBrowserWithRetry } from "./browser.js";
 import puppeteer, { type Browser, type Page } from "@cloudflare/puppeteer";
-import type { FubonsecConfig } from "@taiwan-fin-hub/connectors";
+import type {
+  FubonsecClient,
+  FubonsecConfig,
+  FubonsecHolding,
+  FubonsecSettlementBalance,
+  FubonsecSettlementMovement,
+  FubonsecTrade,
+} from "@taiwan-fin-hub/connectors";
 
-const LOGIN_URL = "https://www.fbs.com.tw/Beginner/tradingNote";
+const ORIGIN = "https://www.fbs.com.tw";
+const LOGIN_URL = `${ORIGIN}/Home/index?loginFlag=Y`;
+const PRODUCT_OVERVIEW_URL = `${ORIGIN}/order/page_101_1`;
+const DOMESTIC_STOCK_URL = `${ORIGIN}/order/page_101_2`;
+const OVERSEAS_STOCK_URL = `${ORIGIN}/order/page_101_3`;
 const CAPTCHA_KEEP_ALIVE_MS = 150_000;
 const CAPTCHA_VALIDITY_MS = 120_000;
 const CAPTCHA_IMAGE_TIMEOUT_MS = 10_000;
+const LOGIN_RESULT_ATTEMPTS = 12;
+const LOGIN_RESULT_POLL_MS = 750;
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -41,6 +54,27 @@ export type PreparedFubonsecCaptcha = {
   captchaImage: string;
   captchaDigitCount: number;
 };
+
+export type FubonsecBrowserClient = FubonsecClient & {
+  close(): Promise<void>;
+};
+
+type TableRow = {
+  cells: Record<string, string>;
+  values: string[];
+};
+
+type PageRows = {
+  asOfDate?: string;
+  rows: TableRow[];
+};
+
+export function createFubonsecBrowserClient(
+  browser: Fetcher | undefined,
+  config: FubonsecConfig,
+): FubonsecBrowserClient {
+  return new FubonsecBrowserSession(browser, config);
+}
 
 export async function prepareFubonsecCaptcha(
   browser: Fetcher | undefined,
@@ -82,6 +116,101 @@ export async function prepareFubonsecCaptcha(
   }
 }
 
+class FubonsecBrowserSession implements FubonsecBrowserClient {
+  private browserInstance?: Browser;
+  private page?: Page;
+  private authenticated = false;
+
+  constructor(
+    private readonly browser: Fetcher | undefined,
+    private readonly config: FubonsecConfig,
+  ) {}
+
+  async fetchHoldings(): Promise<FubonsecHolding[]> {
+    const page = await this.ensureAuthenticatedPage();
+    const holdings = [
+      ...rowsToDomesticHoldings(
+        await this.fetchRows(page, DOMESTIC_STOCK_URL),
+        this.config,
+      ),
+      ...rowsToOverseasHoldings(
+        await this.fetchRows(page, OVERSEAS_STOCK_URL),
+        this.config,
+      ),
+    ];
+    if (holdings.length > 0) return holdings;
+
+    return rowsToOverviewHoldings(
+      await this.fetchRows(page, PRODUCT_OVERVIEW_URL),
+      this.config,
+    );
+  }
+
+  async fetchTrades(): Promise<FubonsecTrade[]> {
+    await this.ensureAuthenticatedPage();
+    return [];
+  }
+
+  async fetchSettlementBalances(): Promise<FubonsecSettlementBalance[]> {
+    await this.ensureAuthenticatedPage();
+    return [];
+  }
+
+  async fetchSettlementMovements(): Promise<FubonsecSettlementMovement[]> {
+    await this.ensureAuthenticatedPage();
+    return [];
+  }
+
+  async close() {
+    if (!this.browserInstance) return;
+    await closeFubonsecBrowser(this.browserInstance);
+    this.browserInstance = undefined;
+    this.page = undefined;
+    this.authenticated = false;
+  }
+
+  private async ensureAuthenticatedPage() {
+    if (this.authenticated && this.page) return this.page;
+    requireCredentials(this.config);
+    if (!this.browser) throw new Error("富邦證券同步需要 BROWSER binding。");
+    if (!this.config.browserSessionId || !this.config.captcha) {
+      throw new FubonsecVerificationRequiredError(
+        "富邦證券 session 已失效，需要重新取得圖形驗證碼。",
+      );
+    }
+    if (
+      !this.config.browserSessionExpiresAt ||
+      new Date(this.config.browserSessionExpiresAt) <= new Date()
+    ) {
+      throw new FubonsecVerificationRequiredError(
+        "富邦證券圖形驗證碼已逾時，請重新取得驗證碼。",
+      );
+    }
+    assertCaptcha(this.config.captcha);
+
+    this.browserInstance = await acquireBrowser(
+      this.browser,
+      this.config.browserSessionId,
+    );
+    const pages = await this.browserInstance.pages();
+    this.page = pages[0] ?? (await this.browserInstance.newPage());
+    await submitLogin(this.page, this.config);
+    this.authenticated = true;
+    return this.page;
+  }
+
+  private async fetchRows(page: Page, url: string) {
+    try {
+      await page.goto(url, { waitUntil: "networkidle2", timeout: 30_000 });
+      await assertStillAuthenticated(page);
+      return extractTableRows(page);
+    } catch (error) {
+      if (error instanceof FubonsecVerificationRequiredError) throw error;
+      throw new FubonsecConnectionError("富邦證券帳戶頁資料讀取失敗。", error);
+    }
+  }
+}
+
 async function captureCaptcha(page: Page) {
   try {
     await page.waitForFunction(
@@ -118,6 +247,294 @@ async function captureCaptcha(page: Page) {
   }
 }
 
+async function submitLogin(page: Page, config: FubonsecConfig) {
+  try {
+    await fillLoginField(
+      page,
+      ["身分證", "身分證字號", "user", "id"],
+      config.userId!,
+    );
+    await fillLoginField(
+      page,
+      ["密碼", "password", "passwd", "pwd"],
+      config.password!,
+      "password",
+    );
+    await fillLoginField(
+      page,
+      ["驗證碼", "captcha", "authcode"],
+      config.captcha!,
+    );
+    const clicked = await clickLoginButton(page);
+    if (!clicked)
+      throw new FubonsecConnectionError("富邦證券登入按鈕結構已變更。");
+
+    for (let attempt = 0; attempt < LOGIN_RESULT_ATTEMPTS; attempt += 1) {
+      const outcome = await readLoginOutcome(page);
+      if (outcome === "success") return;
+      if (outcome === "captcha") {
+        throw new FubonsecVerificationRequiredError(
+          "富邦證券圖形驗證碼錯誤，請重新取得驗證碼。",
+        );
+      }
+      if (outcome === "credential") {
+        throw new FubonsecVerificationRequiredError(
+          "富邦證券登入資料遭拒，請確認身分證字號與登入密碼。",
+        );
+      }
+      if (outcome === "otp") {
+        throw new FubonsecVerificationRequiredError(
+          "富邦證券要求 OTP 動態密碼驗證；目前富邦 connector 尚未支援 OTP 流程。",
+        );
+      }
+      if (outcome === "webca") {
+        throw new FubonsecVerificationRequiredError(
+          "富邦證券要求 WebCA 憑證保護密碼；目前富邦 connector 尚未支援憑證驗證。",
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, LOGIN_RESULT_POLL_MS));
+    }
+    throw new FubonsecConnectionError(
+      "富邦證券登入已送出，但未能確認登入結果。",
+    );
+  } catch (error) {
+    if (
+      error instanceof FubonsecConnectionError ||
+      error instanceof FubonsecVerificationRequiredError
+    ) {
+      throw error;
+    }
+    throw new FubonsecConnectionError("富邦證券登入流程失敗。", error);
+  }
+}
+
+async function fillLoginField(
+  page: Page,
+  hints: string[],
+  value: string,
+  preferredType?: string,
+) {
+  const selector = await page.evaluate(
+    ({ hints, preferredType }) => {
+      const normalize = (text: string | null | undefined) =>
+        text?.toLowerCase().replace(/\s+/g, "") ?? "";
+      const isVisible = (element: HTMLElement) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+      const inputs = Array.from(
+        document.querySelectorAll<HTMLInputElement>("input"),
+      ).filter(
+        (input) =>
+          !input.disabled &&
+          input.type !== "hidden" &&
+          input.type !== "checkbox" &&
+          input.type !== "radio" &&
+          isVisible(input),
+      );
+      const candidates = preferredType
+        ? [
+            ...inputs.filter((input) => input.type === preferredType),
+            ...inputs.filter((input) => input.type !== preferredType),
+          ]
+        : inputs;
+      const match = candidates.find((input) => {
+        const haystack = normalize(
+          [
+            input.placeholder,
+            input.name,
+            input.id,
+            input.getAttribute("aria-label"),
+            input.autocomplete,
+          ]
+            .filter(Boolean)
+            .join(" "),
+        );
+        return hints.some((hint) => haystack.includes(normalize(hint)));
+      });
+      if (!match) return undefined;
+      match.dataset.fubonsecLoginField = hints[0] ?? "field";
+      return `[data-fubonsec-login-field="${CSS.escape(match.dataset.fubonsecLoginField)}"]`;
+    },
+    { hints, preferredType },
+  );
+  if (!selector) {
+    throw new FubonsecConnectionError("富邦證券登入欄位結構已變更。");
+  }
+  await page.click(selector, { clickCount: 3 });
+  await page.type(selector, value);
+}
+
+async function clickLoginButton(page: Page) {
+  return page.evaluate(() => {
+    const normalize = (text: string | null | undefined) =>
+      text?.replace(/\s+/g, "") ?? "";
+    const isVisible = (element: HTMLElement) => {
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return (
+        style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        rect.width > 0 &&
+        rect.height > 0
+      );
+    };
+    const candidates = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'button, input[type="button"], input[type="submit"], a, [role="button"]',
+      ),
+    ).filter((element) => {
+      const label =
+        element instanceof HTMLInputElement ? element.value : element.innerText;
+      return (
+        isVisible(element) &&
+        normalize(label) === "登入" &&
+        !/otp|webca|憑證|驗證/.test(
+          normalize(
+            [
+              element.id,
+              element.className.toString(),
+              element.getAttribute("aria-label"),
+            ].join(" "),
+          ).toLowerCase(),
+        )
+      );
+    });
+    const target =
+      candidates.find((element) =>
+        element.matches('button, input[type="button"], input[type="submit"]'),
+      ) ?? candidates[0];
+    target?.click();
+    return Boolean(target);
+  });
+}
+
+async function readLoginOutcome(page: Page) {
+  return page.evaluate(() => {
+    const visibleText = () => {
+      const isVisible = (element: Element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+      return Array.from(document.body.querySelectorAll<HTMLElement>("body *"))
+        .filter(isVisible)
+        .map((element) => element.innerText || element.textContent || "")
+        .join("\n");
+    };
+    const text = visibleText().replace(/\s+/g, "");
+    const hasVisibleLoginInput = Array.from(
+      document.querySelectorAll<HTMLInputElement>("input"),
+    ).some((input) => {
+      const style = window.getComputedStyle(input);
+      const rect = input.getBoundingClientRect();
+      return (
+        input.type !== "hidden" &&
+        !input.disabled &&
+        style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        rect.width > 0 &&
+        rect.height > 0 &&
+        /身分證|密碼|驗證碼/.test(
+          [input.placeholder, input.name, input.id].filter(Boolean).join(""),
+        )
+      );
+    });
+    if (/OTP驗證碼|動態密碼|取得驗證碼|手機發送|e-?mail發送/i.test(text)) {
+      return "otp" as const;
+    }
+    if (/WebCA|憑證保護密碼/i.test(text)) {
+      return "webca" as const;
+    }
+    if (/驗證碼.{0,20}(錯誤|不符|有誤|失敗)|請輸入純數字驗證碼/.test(text)) {
+      return "captcha" as const;
+    }
+    if (
+      /密碼.{0,20}(錯誤|不符|有誤|失敗)|登入資料.{0,20}(錯誤|有誤)|帳號.{0,20}(錯誤|有誤)/.test(
+        text,
+      )
+    ) {
+      return "credential" as const;
+    }
+    if (
+      !hasVisibleLoginInput &&
+      (/\/order\//i.test(location.pathname) || /帳戶總覽|商品總覽/.test(text))
+    ) {
+      return "success" as const;
+    }
+    return "pending" as const;
+  });
+}
+
+async function assertStillAuthenticated(page: Page) {
+  const loginVisible = await page.evaluate(() =>
+    Array.from(document.querySelectorAll<HTMLInputElement>("input")).some(
+      (input) => {
+        const style = window.getComputedStyle(input);
+        const rect = input.getBoundingClientRect();
+        return (
+          input.type !== "hidden" &&
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          rect.width > 0 &&
+          rect.height > 0 &&
+          /身分證|密碼|驗證碼/.test(
+            [input.placeholder, input.name, input.id].filter(Boolean).join(""),
+          )
+        );
+      },
+    ),
+  );
+  if (loginVisible) {
+    throw new FubonsecVerificationRequiredError(
+      "富邦證券登入狀態已失效，請重新取得圖形驗證碼。",
+    );
+  }
+}
+
+async function extractTableRows(page: Page): Promise<PageRows> {
+  return page.evaluate(() => {
+    const text = document.body.innerText ?? "";
+    const asOfDate = text.match(/查詢資料時間為[:：]\s*([^\n]+)/)?.[1]?.trim();
+    const normalize = (value: string | null | undefined) =>
+      value?.replace(/\s+/g, " ").trim() ?? "";
+    const rows = Array.from(document.querySelectorAll("table")).flatMap(
+      (table) => {
+        const tableRows = Array.from(table.querySelectorAll("tr"));
+        const headerCells = tableRows.at(0)?.querySelectorAll("th,td");
+        const headers = Array.from(headerCells ?? []).map((cell) =>
+          normalize(cell.textContent),
+        );
+        if (headers.length === 0) return [];
+        return tableRows.slice(1).flatMap((row) => {
+          const values = Array.from(row.querySelectorAll("td")).map((cell) =>
+            normalize(cell.textContent),
+          );
+          if (values.every((value) => !value)) return [];
+          const cells: Record<string, string> = {};
+          values.forEach((value, index) => {
+            const key = headers[index];
+            if (key) cells[key] = value;
+          });
+          return [{ cells, values }];
+        });
+      },
+    );
+    return { asOfDate, rows };
+  });
+}
+
 async function configurePage(page: Page) {
   await page.setViewport({ width: 1280, height: 900 });
   await page.setUserAgent(USER_AGENT);
@@ -126,12 +543,146 @@ async function configurePage(page: Page) {
   });
 }
 
+function assertCaptcha(captcha: string) {
+  if (!/^\d{6}$/.test(captcha)) {
+    throw new FubonsecVerificationRequiredError(
+      "富邦證券驗證碼必須是 6 位數字。",
+    );
+  }
+}
+
 function requireCredentials(config: FubonsecConfig) {
   if (!config.userId || !config.account || !config.password) {
     throw new FubonsecVerificationRequiredError(
       "請先儲存富邦證券身分證字號、登入代號與登入密碼。",
     );
   }
+}
+
+function rowsToDomesticHoldings(
+  pageRows: PageRows,
+  config: FubonsecConfig,
+): FubonsecHolding[] {
+  return pageRows.rows.flatMap((row) => {
+    const name = pickCell(row, ["股票名稱", "個股名稱", "商品名稱", "名稱"]);
+    const quantity = pickCell(row, [
+      "餘額股數",
+      "持有股數",
+      "今餘額",
+      "昨庫存",
+    ]);
+    if (!name || !quantity || !hasNumericValue(quantity)) return [];
+    return [
+      {
+        accountId: accountId(config),
+        brokerName: "富邦證券",
+        brokerAccount: config.account,
+        symbol:
+          pickCell(row, ["股票代號", "股號", "代號"]) ?? symbolFromName(name),
+        name: nameWithoutSymbol(name),
+        assetType: "stock" as const,
+        quantity,
+        marketValue: pickCell(row, ["帳面價值", "參考市值", "市值"]),
+        currency: "TWD",
+        asOfDate: normalizeFubonDate(pageRows.asOfDate),
+        raw: row.cells,
+      },
+    ];
+  });
+}
+
+function rowsToOverseasHoldings(
+  pageRows: PageRows,
+  config: FubonsecConfig,
+): FubonsecHolding[] {
+  return pageRows.rows.flatMap((row) => {
+    const name = pickCell(row, ["個股名稱", "股票名稱", "商品名稱", "名稱"]);
+    const quantity = pickCell(row, ["持有股數", "股數", "數量"]);
+    if (!name || !quantity || !hasNumericValue(quantity)) return [];
+    return [
+      {
+        accountId: accountId(config),
+        brokerName: "富邦證券",
+        brokerAccount: config.account,
+        symbol:
+          pickCell(row, ["股票代號", "股號", "代號"]) ?? symbolFromName(name),
+        name: nameWithoutSymbol(name),
+        assetType: "stock" as const,
+        quantity,
+        marketValue: pickCell(row, ["參考市值", "市值"]),
+        currency: "TWD",
+        asOfDate: normalizeFubonDate(pageRows.asOfDate),
+        raw: row.cells,
+      },
+    ];
+  });
+}
+
+function rowsToOverviewHoldings(
+  pageRows: PageRows,
+  config: FubonsecConfig,
+): FubonsecHolding[] {
+  return pageRows.rows.flatMap((row) => {
+    const product = pickCell(row, ["國內商品", "國外商品"]);
+    const value = pickCell(row, ["參考帳戶價值(TWD)", "參考帳戶價值"]);
+    if (!product || !value || !hasNumericValue(value)) return [];
+    return [
+      {
+        accountId: accountId(config),
+        brokerName: "富邦證券",
+        brokerAccount: config.account,
+        name: product,
+        assetType: product.includes("基金")
+          ? ("fund" as const)
+          : ("stock" as const),
+        quantity: "1",
+        marketValue: value,
+        currency: "TWD",
+        asOfDate: normalizeFubonDate(
+          pickCell(row, ["帳戶日期(資料日期)", "資料日期"]) ??
+            pageRows.asOfDate,
+        ),
+        raw: row.cells,
+      },
+    ];
+  });
+}
+
+function pickCell(row: TableRow, labels: string[]) {
+  const normalize = (value: string) => value.replace(/\s+/g, "");
+  for (const [key, value] of Object.entries(row.cells)) {
+    if (labels.some((label) => normalize(key).includes(normalize(label)))) {
+      return value || undefined;
+    }
+  }
+  return undefined;
+}
+
+function hasNumericValue(value: string) {
+  return /[0-9]/.test(value) && Number(value.replace(/[,，\s]/g, "")) !== 0;
+}
+
+function symbolFromName(name: string) {
+  return name.match(/\b\d{4,6}[A-Z]?\b/)?.[0];
+}
+
+function nameWithoutSymbol(name: string) {
+  return name.replace(/\b\d{4,6}[A-Z]?\b/g, "").trim() || name;
+}
+
+function normalizeFubonDate(value: string | undefined) {
+  const fallback = new Date().toISOString().slice(0, 10);
+  if (!value) return fallback;
+  const match = value.match(/(\d{4})[/-](\d{1,2})[/-](\d{1,2})/);
+  if (!match) return fallback;
+  const [, year, month, day] = match;
+  return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+}
+
+function accountId(config: FubonsecConfig) {
+  return ["fubonsec", config.account ?? config.userId]
+    .filter(Boolean)
+    .join(":");
 }
 
 async function acquireBrowser(browser: Fetcher, preferredSessionId?: string) {

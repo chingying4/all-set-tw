@@ -217,7 +217,7 @@ beforeEach(() => {
   mocks.prepareFubonsecCaptchaSession.mockResolvedValue({
     captchaImage: "data:image/jpeg;base64,AQID",
     expiresAt: "2026-09-23T12:02:00.000Z",
-    digitCount: 4,
+    digitCount: 6,
     captchaKind: "numeric",
   });
   mocks.syncFubonsec.mockResolvedValue({
@@ -842,7 +842,7 @@ describe("Fubon Securities web sync routes", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      digitCount: 4,
+      digitCount: 6,
       captchaKind: "numeric",
       captchaImage: "data:image/jpeg;base64,AQID",
     });
@@ -865,19 +865,19 @@ describe("Fubon Securities web sync routes", () => {
     });
   });
 
-  it("accepts four to eight numeric characters and rejects malformed input", async () => {
+  it("accepts six numeric characters and rejects malformed input", async () => {
     const valid = await syncRoutes.request(
       "/connectors/fubonsec/sync",
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ captcha: "1234" }),
+        body: JSON.stringify({ captcha: "123456" }),
       },
       env,
     );
     expect(valid.status).toBe(200);
     expect(mocks.syncFubonsec).toHaveBeenCalledWith(env, "manual", "all", {
-      captcha: "1234",
+      captcha: "123456",
     });
 
     const invalid = await syncRoutes.request(
@@ -885,7 +885,7 @@ describe("Fubon Securities web sync routes", () => {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ captcha: "12AB" }),
+        body: JSON.stringify({ captcha: "1234" }),
       },
       env,
     );
