@@ -877,22 +877,13 @@ async function captureCaptcha(page: BrowserPage) {
       .sort((left, right) => right.score - left.score);
     const image = images[0]?.image;
     if (!image) return undefined;
-    const src = image.currentSrc || image.src || image.getAttribute("src");
-    if (!src) return undefined;
-    const url = new URL(src, window.location.href);
-    url.searchParams.set("_", String(Date.now()));
-    const response = await fetch(url.href, {
-      cache: "no-store",
-      credentials: "include",
-    });
-    if (!response.ok) return undefined;
-    const blob = await response.blob();
-    const dataUrl = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(blob);
-    });
+    const canvas = document.createElement("canvas");
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    const context = canvas.getContext("2d");
+    if (!context) return undefined;
+    context.drawImage(image, 0, 0);
+    const dataUrl = canvas.toDataURL("image/jpeg");
     return {
       bytes: dataUrl.split(",")[1] ?? "",
       digitCount,
