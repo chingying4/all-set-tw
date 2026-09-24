@@ -844,7 +844,7 @@ async function captureCaptcha(page: BrowserPage) {
       "台新登入頁沒有在期限內取得圖形驗證碼。",
     );
   }
-  const target = await page.evaluate(() => {
+  const target = await page.evaluate((digitCount) => {
     const captchaInput = document.querySelector<HTMLInputElement>(
       'input[data-taishin-field="captcha"]',
     );
@@ -880,9 +880,9 @@ async function captureCaptcha(page: BrowserPage) {
     image.dataset.taishinCaptcha = "image";
     return {
       selector: 'img[data-taishin-captcha="image"]',
-      digitCount: TAISHIN_CAPTCHA_DIGIT_COUNT,
+      digitCount,
     };
-  });
+  }, TAISHIN_CAPTCHA_DIGIT_COUNT);
   if (!target) {
     throw new TaishinCaptchaUnavailableError(
       "台新登入頁沒有在期限內取得圖形驗證碼。",
